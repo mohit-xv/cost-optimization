@@ -1,0 +1,6 @@
+# Copy to terraform.tfvars and fill in. Deploy this module in EACH target/sandbox account.
+central_account_id = "111111111111"          # the central Cost Killer account
+external_id        = "REPLACE-WITH-LONG-RANDOM-UUID"
+
+# Optional: lock the trust down to the central Lambda execution role instead of the account root.
+# central_principal_arns = ["arn:aws:iam::111111111111:role/CostKiller-central-lambda-exec"]

@@ -1,0 +1,14 @@
+# Copy to terraform.tfvars and fill in. Deploy in the CENTRAL (primary) account.
+region      = "us-east-1"
+project     = "cost-killer"
+external_id = "REPLACE-WITH-LONG-RANDOM-UUID" # must match every target-account module
+
+# Cognito Hosted UI domain prefix (must be globally unique).
+cognito_domain_prefix = "cost-killer-auth-CHANGEME"
+
+# Where the Next.js app runs (for OAuth redirect + logout).
+cognito_callback_urls = ["http://localhost:3000/api/auth/callback", "https://YOUR-APP.vercel.app/api/auth/callback"]
+cognito_logout_urls   = ["http://localhost:3000", "https://YOUR-APP.vercel.app"]
+
+# Confirm the current AWSSDKPandas-Python311 layer version for your region before apply.
+# pandas_layer_arn = "arn:aws:lambda:us-east-1:336392948345:layer:AWSSDKPandas-Python311:20"
