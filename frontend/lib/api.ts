@@ -1,4 +1,5 @@
 import { getAccessToken } from "@/lib/auth";
+import { mockApi } from "@/lib/mock";
 import type {
   Account,
   ExecutionResponse,
@@ -6,6 +7,10 @@ import type {
 } from "@/lib/types";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
+
+// With no backend URL configured (local dev), serve in-memory demo data instead of
+// hitting non-existent endpoints. Set NEXT_PUBLIC_API_BASE_URL to use the real backend.
+export const IS_MOCK = !BASE;
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getAccessToken();
@@ -26,7 +31,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-export const api = {
+const realApi = {
   listFindings: (params?: { status?: string; accountId?: string }) => {
     const q = new URLSearchParams();
     if (params?.status) q.set("status", params.status);
@@ -59,3 +64,5 @@ export const api = {
       method: "DELETE",
     }),
 };
+
+export const api = IS_MOCK ? mockApi : realApi;

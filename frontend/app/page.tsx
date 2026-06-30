@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { api } from "@/lib/api";
+import { api, IS_MOCK } from "@/lib/api";
 import { getAccessToken, isConfigured } from "@/lib/auth";
 import { usd } from "@/lib/format";
 import type { ExecutionResult, FindingsResponse } from "@/lib/types";
@@ -127,6 +127,13 @@ export default function DashboardPage() {
           {scanning ? "Scanning…" : "Run discovery scan"}
         </button>
       </div>
+
+      {IS_MOCK && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+          Demo data — no backend configured. Set <code>NEXT_PUBLIC_API_BASE_URL</code> in{" "}
+          <code>frontend/.env.local</code> to connect to your deployed AWS backend.
+        </div>
+      )}
 
       {error && (
         <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">

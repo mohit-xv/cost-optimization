@@ -35,6 +35,23 @@ _GP3_BASELINE_IOPS = 3000
 _GP3_IOPS_MONTH = 0.005       # per provisioned IOPS-month over baseline (us-east-1)
 _IO_IOPS_MONTH = 0.065        # io1/io2 per provisioned IOPS-month (us-east-1)
 
+HOURS_PER_MONTH = 730
+
+# Public IPv4 / Elastic IP: since 2024-02-01 every public IPv4 is billed $0.005/hr.
+_EIP_HOURLY = 0.005
+
+# NAT Gateway hourly uptime rate per region (fallback; data-processing fees excluded
+# because an idle gateway processes ~0 GB).
+_NAT_HOURLY = {
+    "us-east-1": 0.045,
+    "us-east-2": 0.045,
+    "us-west-2": 0.045,
+    "eu-west-1": 0.048,
+    "ap-northeast-1": 0.062,
+    "ap-south-1": 0.056,
+    "sa-east-1": 0.093,
+}
+
 
 def ebs_pricing_pk(region: str, volume_type: str) -> str:
     return f"EBS#{region}#{volume_type}"
@@ -56,3 +73,14 @@ def ebs_monthly_burn(size_gb: float, volume_type: str, region: str, iops: int = 
     elif volume_type == "gp3" and iops and iops > _GP3_BASELINE_IOPS:
         burn += (iops - _GP3_BASELINE_IOPS) * _GP3_IOPS_MONTH
     return round(burn, 4)
+
+
+def eip_monthly_burn() -> float:
+    """Monthly cost of an idle (or any) public IPv4 / Elastic IP."""
+    return round(_EIP_HOURLY * HOURS_PER_MONTH, 4)
+
+
+def nat_gateway_monthly_burn(region: str) -> float:
+    """Monthly uptime cost of a NAT Gateway (data-processing excluded for an idle one)."""
+    hourly = _NAT_HOURLY.get(region, 0.045)
+    return round(hourly * HOURS_PER_MONTH, 4)

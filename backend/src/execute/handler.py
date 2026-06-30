@@ -38,6 +38,44 @@ def _receipt(payload: dict) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
+def _aborted(finding, reason: str) -> dict:
+    return {"findingId": finding.finding_id, "status": "ABORTED", "reason": reason}
+
+
+def _record_deletion(finding, resource_id, action, actor, snapshot_id=None) -> dict:
+    """Write the deletion receipt to ExecutionLog and return a DELETED result."""
+    ts = int(time.time())
+    receipt = _receipt(
+        {
+            "resourceId": resource_id,
+            "action": action,
+            "actor": actor,
+            "ts": ts,
+            "priorState": FindingStatus.APPROVED.value,
+            "snapshotId": snapshot_id,
+        }
+    )
+    dynamo.put_execution_log(
+        {
+            "findingId": finding.finding_id,
+            "ts": ts,
+            "accountId": finding.account_id,
+            "region": finding.region,
+            "resourceId": resource_id,
+            "action": action,
+            "actor": actor,
+            "snapshotId": snapshot_id,
+            "receipt": receipt,
+        }
+    )
+    return {
+        "findingId": finding.finding_id,
+        "status": "DELETED",
+        "snapshotId": snapshot_id,
+        "receipt": receipt,
+    }
+
+
 def _dry_run_delete_volume(ec2, volume_id: str) -> tuple[bool, str]:
     """Validate the delete with EC2 DryRun. Returns (allowed, message)."""
     try:
@@ -111,40 +149,91 @@ def _delete_ebs_volume(account, finding, dry_run: bool, actor: str) -> dict:
             "snapshotId": snapshot_id,
         }
 
-    ts = int(time.time())
-    receipt = _receipt(
-        {
-            "resourceId": volume_id,
-            "action": "delete_volume",
-            "actor": actor,
-            "ts": ts,
-            "priorState": FindingStatus.APPROVED.value,
-            "snapshotId": snapshot_id,
-        }
-    )
-    dynamo.put_execution_log(
-        {
-            "findingId": finding.finding_id,
-            "ts": ts,
-            "accountId": finding.account_id,
-            "region": finding.region,
-            "resourceId": volume_id,
-            "action": "delete_volume",
-            "actor": actor,
-            "snapshotId": snapshot_id,
-            "receipt": receipt,
-        }
-    )
-    return {
-        "findingId": finding.finding_id,
-        "status": "DELETED",
-        "snapshotId": snapshot_id,
-        "receipt": receipt,
-    }
+    return _record_deletion(finding, volume_id, "delete_volume", actor, snapshot_id)
+
+
+def _delete_elastic_ip(account, finding, dry_run: bool, actor: str) -> dict:
+    ec2 = sts_assume.exec_client("ec2", account, finding.region)
+    alloc = finding.resource_id
+    try:
+        resp = ec2.describe_addresses(AllocationIds=[alloc])
+    except ClientError as exc:
+        if "NotFound" in exc.response["Error"]["Code"]:
+            return _aborted(finding, "already_deleted")
+        raise
+    addrs = resp.get("Addresses", [])
+    if not addrs:
+        return _aborted(finding, "already_deleted")
+    addr = addrs[0]
+    if addr.get("AssociationId") or addr.get("InstanceId") or addr.get("NetworkInterfaceId"):
+        return _aborted(finding, "reassociated")
+    protected, preason = is_protected(addr.get("Tags", []))
+    if protected:
+        return _aborted(finding, preason)
+
+    try:
+        ec2.release_address(AllocationId=alloc, DryRun=True)
+        allowed, msg = True, "dry_run_no_exception"
+    except ClientError as exc:
+        code = exc.response["Error"]["Code"]
+        if code == "DryRunOperation":
+            allowed, msg = True, "dry_run_ok"
+        elif code == "UnauthorizedOperation":
+            allowed, msg = False, "unauthorized"
+        else:
+            allowed, msg = False, code
+    if not allowed:
+        return _aborted(finding, msg)
+    if dry_run:
+        return {"findingId": finding.finding_id, "status": "DRY_RUN_OK", "reason": msg}
+
+    try:
+        ec2.release_address(AllocationId=alloc)
+    except ClientError as exc:
+        code = exc.response["Error"]["Code"]
+        status = "IGNORED" if code in _NATIVE_PROTECTION_CODES else "FAILED"
+        return {"findingId": finding.finding_id, "status": status, "reason": code}
+    return _record_deletion(finding, alloc, "release_address", actor)
+
+
+def _delete_nat_gateway(account, finding, dry_run: bool, actor: str) -> dict:
+    ec2 = sts_assume.exec_client("ec2", account, finding.region)
+    nat_id = finding.resource_id
+    try:
+        resp = ec2.describe_nat_gateways(NatGatewayIds=[nat_id])
+    except ClientError as exc:
+        if "NotFound" in exc.response["Error"]["Code"]:
+            return _aborted(finding, "already_deleted")
+        raise
+    gws = resp.get("NatGateways", [])
+    if not gws or gws[0].get("State") in ("deleting", "deleted"):
+        return _aborted(finding, "already_deleted")
+    nat = gws[0]
+    if nat.get("State") != "available":
+        return _aborted(finding, f"state_changed:{nat.get('State')}")
+    protected, preason = is_protected(nat.get("Tags", []))
+    if protected:
+        return _aborted(finding, preason)
+
+    # delete_nat_gateway has no DryRun parameter, so the preview is a re-verify only.
+    if dry_run:
+        return {"findingId": finding.finding_id, "status": "DRY_RUN_OK", "reason": "no_dryrun_api"}
+
+    try:
+        ec2.delete_nat_gateway(NatGatewayId=nat_id)
+    except ClientError as exc:
+        code = exc.response["Error"]["Code"]
+        status = "IGNORED" if code in _NATIVE_PROTECTION_CODES else "FAILED"
+        return {"findingId": finding.finding_id, "status": status, "reason": code}
+    return _record_deletion(finding, nat_id, "delete_nat_gateway", actor)
 
 
 # resource type -> deletion function
-_DELETERS = {ResourceType.EBS_VOLUME.value: _delete_ebs_volume}
+_DELETERS = {
+    ResourceType.EBS_VOLUME.value: _delete_ebs_volume,
+    ResourceType.ELASTIC_IP.value: _delete_elastic_ip,
+    ResourceType.NAT_GATEWAY.value: _delete_nat_gateway,
+}
 
 
 def execute(finding_ids, dry_run: bool = False, actor: str = "unknown") -> dict:

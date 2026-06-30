@@ -1,8 +1,12 @@
 """Discovery (scan) Lambda — read-only.
 
-MVP: finds unattached EBS volumes across registered target accounts/regions, computes
-monthly cash burn from the cached pricing matrix, ranks with pandas, and upserts findings
-as ``PENDING_APPROVAL``. Makes zero mutating calls.
+Detects waste across registered target accounts/regions and upserts findings as
+``PENDING_APPROVAL``. Makes zero mutating calls.
+
+Resource types:
+  - Unattached EBS volumes        (state=available >= IDLE_DAYS_THRESHOLD days)
+  - Unassociated Elastic IPs      (no association)
+  - Idle NAT Gateways             (≈0 bytes processed over the metric window)
 
 Invoke async (EventBridge schedule or API 202) with an optional event:
     {"accountId": "...", "regions": ["us-east-1"], "scanId": "..."}
@@ -12,7 +16,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -20,13 +24,16 @@ from common import config, dynamo, pricing, sts_assume
 from common.guardrails import is_protected
 from common.models import Finding, ResourceType, make_finding_id
 
+_NAT_METRIC_WINDOW_DAYS = 14
+_NAT_IDLE_BYTES = 1_000_000  # < ~1 MB processed over the window => idle
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# --- Unattached EBS volumes -------------------------------------------------------
 def _last_detach_time(account, region: str, volume_id: str):
-    """Best-effort most-recent DetachVolume/CreateVolume time from CloudTrail."""
     try:
         ct = sts_assume.scan_client("cloudtrail", account, region)
         resp = ct.lookup_events(
@@ -52,16 +59,15 @@ def _volume_idle_days(account, region: str, vol: dict) -> int:
     return max(0, (_now() - ref).days)
 
 
-def _scan_account_region(account, region: str) -> list[dict]:
-    """Candidate unattached EBS volumes for one account+region (after guardrails)."""
+def _scan_ebs(account, region: str) -> list[dict]:
     ec2 = sts_assume.scan_client("ec2", account, region)
-    candidates: list[dict] = []
+    out: list[dict] = []
     paginator = ec2.get_paginator("describe_volumes")
     for page in paginator.paginate(
         Filters=[{"Name": "status", "Values": ["available"]}]
     ):
         for vol in page.get("Volumes", []):
-            protected, _reason = is_protected(vol.get("Tags", []))
+            protected, _ = is_protected(vol.get("Tags", []))
             if protected:
                 continue
             days_idle = _volume_idle_days(account, region, vol)
@@ -70,20 +76,127 @@ def _scan_account_region(account, region: str) -> list[dict]:
             vtype = vol.get("VolumeType", "gp2")
             size = vol.get("Size", 0)
             iops = vol.get("Iops", 0) or 0
-            candidates.append(
-                {
-                    "accountId": account.account_id,
-                    "region": region,
-                    "resourceId": vol["VolumeId"],
-                    "resourceType": ResourceType.EBS_VOLUME.value,
-                    "sizeGb": int(size),
-                    "volumeType": vtype,
-                    "iops": int(iops),
-                    "daysIdle": int(days_idle),
-                    "monthlyBurn": pricing.ebs_monthly_burn(size, vtype, region, iops),
-                }
+            out.append(
+                _candidate(
+                    account,
+                    region,
+                    vol["VolumeId"],
+                    ResourceType.EBS_VOLUME.value,
+                    days_idle,
+                    pricing.ebs_monthly_burn(size, vtype, region, iops),
+                    {"sizeGb": int(size), "volumeType": vtype, "iops": int(iops)},
+                )
             )
-    return candidates
+    return out
+
+
+# --- Unassociated Elastic IPs -----------------------------------------------------
+def _scan_eips(account, region: str) -> list[dict]:
+    ec2 = sts_assume.scan_client("ec2", account, region)
+    out: list[dict] = []
+    for addr in ec2.describe_addresses().get("Addresses", []):
+        if addr.get("AssociationId") or addr.get("InstanceId") or addr.get("NetworkInterfaceId"):
+            continue  # currently associated -> in use
+        protected, _ = is_protected(addr.get("Tags", []))
+        if protected:
+            continue
+        resource_id = addr.get("AllocationId") or addr.get("PublicIp")
+        out.append(
+            _candidate(
+                account,
+                region,
+                resource_id,
+                ResourceType.ELASTIC_IP.value,
+                0,
+                pricing.eip_monthly_burn(),
+                {"publicIp": addr.get("PublicIp"), "allocationId": addr.get("AllocationId")},
+            )
+        )
+    return out
+
+
+# --- Idle NAT Gateways ------------------------------------------------------------
+def _nat_is_idle(account, region: str, nat_id: str) -> bool:
+    """True if the NAT Gateway processed ~no bytes over the metric window."""
+    try:
+        cw = sts_assume.scan_client("cloudwatch", account, region)
+        end = _now()
+        start = end - timedelta(days=_NAT_METRIC_WINDOW_DAYS)
+        resp = cw.get_metric_data(
+            MetricDataQueries=[
+                {
+                    "Id": "out",
+                    "MetricStat": {
+                        "Metric": {
+                            "Namespace": "AWS/NATGateway",
+                            "MetricName": "BytesOutToDestination",
+                            "Dimensions": [{"Name": "NatGatewayId", "Value": nat_id}],
+                        },
+                        "Period": 86400,
+                        "Stat": "Sum",
+                    },
+                }
+            ],
+            StartTime=start,
+            EndTime=end,
+        )
+        values = resp.get("MetricDataResults", [{}])[0].get("Values", [])
+        return sum(values) < _NAT_IDLE_BYTES
+    except Exception:
+        # Be conservative: if metrics can't be read, do NOT flag (avoid false deletes).
+        return False
+
+
+def _scan_nat_gateways(account, region: str) -> list[dict]:
+    ec2 = sts_assume.scan_client("ec2", account, region)
+    out: list[dict] = []
+    resp = ec2.describe_nat_gateways()
+    gateways = list(resp.get("NatGateways", []))
+    while resp.get("NextToken"):
+        resp = ec2.describe_nat_gateways(NextToken=resp["NextToken"])
+        gateways.extend(resp.get("NatGateways", []))
+
+    for nat in gateways:
+        if nat.get("State") != "available":
+            continue
+        protected, _ = is_protected(nat.get("Tags", []))
+        if protected:
+            continue
+        nat_id = nat["NatGatewayId"]
+        if not _nat_is_idle(account, region, nat_id):
+            continue
+        out.append(
+            _candidate(
+                account,
+                region,
+                nat_id,
+                ResourceType.NAT_GATEWAY.value,
+                _NAT_METRIC_WINDOW_DAYS,
+                pricing.nat_gateway_monthly_burn(region),
+                {"subnetId": nat.get("SubnetId"), "vpcId": nat.get("VpcId")},
+            )
+        )
+    return out
+
+
+def _candidate(account, region, resource_id, resource_type, days_idle, monthly_burn, metadata) -> dict:
+    return {
+        "accountId": account.account_id,
+        "region": region,
+        "resourceId": resource_id,
+        "resourceType": resource_type,
+        "daysIdle": int(days_idle),
+        "monthlyBurn": float(monthly_burn),
+        "metadata": metadata,
+    }
+
+
+def _scan_account_region(account, region: str) -> list[dict]:
+    return (
+        _scan_ebs(account, region)
+        + _scan_eips(account, region)
+        + _scan_nat_gateways(account, region)
+    )
 
 
 def run_scan(event: dict | None = None) -> dict:
@@ -125,11 +238,7 @@ def run_scan(event: dict | None = None) -> dict:
                 days_idle=int(rec["daysIdle"]),
                 monthly_burn=monthly,
                 daily_burn=round(monthly / 30.0, 4),
-                metadata={
-                    "sizeGb": int(rec["sizeGb"]),
-                    "volumeType": rec["volumeType"],
-                    "iops": int(rec["iops"]),
-                },
+                metadata=rec["metadata"],
                 scan_id=scan_id,
             )
             if dynamo.upsert_pending_finding(finding) == "upserted":

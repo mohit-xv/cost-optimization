@@ -11,9 +11,9 @@ Two-phase, safety-first model:
    Cognito auth, ExternalId-scoped STS roles, `DryRun`, TOCTOU re-verification and
    tag/ASG guardrails.
 
-> **MVP scope:** full architecture, with detection + execution implemented for
-> **unattached EBS volumes**. Other resource types (EIP, NAT GW, snapshots, ELB, EC2,
-> RDS) are scaffolded for expansion. See `plan` / this README's roadmap.
+> **Implemented:** full architecture, with detection + execution for **unattached EBS
+> volumes**, **unassociated Elastic IPs**, and **idle NAT Gateways**. Remaining resource
+> types (orphaned snapshots, ELB, EC2, RDS, ENI, AMI) are scaffolded for expansion.
 
 ## Repository layout
 
@@ -82,7 +82,8 @@ volume tagged `CostKiller:Protect=true` is **never** flagged or deleted.
 
 ## Roadmap
 
-- **Phase 2:** unassociated Elastic IPs, idle NAT Gateways, orphaned EBS snapshots +
-  enable **FOCUS 1.2 Data Exports** (S3) as the cost-attribution backbone.
+- **Phase 2 (in progress):** ✅ unassociated Elastic IPs, ✅ idle NAT Gateways;
+  remaining — orphaned EBS snapshots + enable **FOCUS 1.2 Data Exports** (S3) as the
+  cost-attribution backbone.
 - **Phase 3:** idle/unused load balancers, underutilized/stopped EC2 (rightsizing).
 - **Phase 4:** idle RDS, orphaned ENIs, old AMIs.
