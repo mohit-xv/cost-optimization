@@ -61,6 +61,25 @@ def test_execute_skips_unapproved(register_account, make_volume):
     assert out["results"][0]["status"] == "SKIPPED"
 
 
+def test_unhandled_deleter_error_marks_failed_not_stuck(register_account, make_volume, monkeypatch):
+    finding, _ = _scan_one(register_account, make_volume)
+    approve(finding.finding_id)
+
+    import execute.handler as ex
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("simulated AWS failure")
+
+    monkeypatch.setitem(ex._DELETERS, "EBS_VOLUME", boom)
+
+    out = ex.execute([finding.finding_id], dry_run=False)
+
+    assert out["deleted"] == 0
+    assert out["results"][0]["status"] == "FAILED"
+    # the finding must not be stuck in DELETING
+    assert dynamo.get_finding(finding.finding_id).status == FindingStatus.FAILED.value
+
+
 def test_toctou_reattached_volume_aborts(register_account, make_volume, ec2):
     finding, volume_id = _scan_one(register_account, make_volume)
     approve(finding.finding_id)

@@ -8,9 +8,12 @@ import type {
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
-// With no backend URL configured (local dev), serve in-memory demo data instead of
-// hitting non-existent endpoints. Set NEXT_PUBLIC_API_BASE_URL to use the real backend.
-export const IS_MOCK = !BASE;
+// Serve in-memory demo data only when explicitly opted in, or in local dev with no
+// backend configured. A PRODUCTION build with a missing API URL must NOT silently mock
+// (it would report fake "deletions") — it falls through to real calls and surfaces errors.
+export const IS_MOCK =
+  process.env.NEXT_PUBLIC_USE_MOCK === "true" ||
+  (!BASE && process.env.NODE_ENV !== "production");
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getAccessToken();

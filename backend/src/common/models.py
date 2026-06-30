@@ -131,7 +131,11 @@ class Account:
         }
 
     def to_json(self) -> dict:
-        return self.to_item()
+        # Never expose the ExternalId (confused-deputy secret) over the API.
+        data = self.to_item()
+        data.pop("externalId", None)
+        data["hasExternalId"] = bool(self.external_id)
+        return data
 
     @staticmethod
     def from_item(item: dict) -> "Account":

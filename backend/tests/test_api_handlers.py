@@ -33,6 +33,21 @@ def test_accounts_crud():
     assert deleted["statusCode"] == 200
 
 
+def test_accounts_response_hides_external_id():
+    create = {
+        "httpMethod": "POST",
+        "body": json.dumps(
+            {"accountId": "123456789012", "name": "sb", "externalId": "super-secret"}
+        ),
+    }
+    created = json.loads(accounts_handler.handler(create, None)["body"])
+    assert "externalId" not in created
+    assert created["hasExternalId"] is True
+
+    listed = json.loads(accounts_handler.handler({"httpMethod": "GET"}, None)["body"])
+    assert all("externalId" not in a for a in listed["accounts"])
+
+
 def test_findings_list_summary_and_approve(register_account, make_volume):
     register_account()
     make_volume(size=50, vtype="gp3")  # 50 * 0.08 = 4.0

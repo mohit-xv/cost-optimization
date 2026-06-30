@@ -293,7 +293,16 @@ def execute(finding_ids, dry_run: bool = False, actor: str = "unknown") -> dict:
             )
             continue
 
-        result = deleter(account, finding, False, actor)
+        # Always leave the DELETING state, even on an unhandled error, so a finding
+        # can never get stuck mid-execution.
+        try:
+            result = deleter(account, finding, False, actor)
+        except Exception as exc:  # noqa: BLE001
+            result = {
+                "findingId": finding_id,
+                "status": "FAILED",
+                "reason": f"unhandled:{exc}",
+            }
         if result["status"] == "DELETED":
             dynamo.transition_status(
                 finding_id,
