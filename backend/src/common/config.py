@@ -43,6 +43,11 @@ def idle_days_threshold() -> int:
     return int(os.environ.get("IDLE_DAYS_THRESHOLD", "7"))
 
 
+def snapshot_retention_days() -> int:
+    """Snapshots older than this are flagged even if their source volume still exists."""
+    return int(os.environ.get("SNAPSHOT_RETENTION_DAYS", "90"))
+
+
 def default_regions() -> list[str]:
     raw = os.environ.get("DEFAULT_REGIONS", "us-east-1")
     return [r.strip() for r in raw.split(",") if r.strip()]

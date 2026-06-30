@@ -23,6 +23,9 @@ REGION = "us-east-1"
 
 @pytest.fixture
 def env(monkeypatch):
+    # moto seeds ~40 default AMIs (and their backing snapshots); disable so
+    # describe_snapshots/describe_images only see resources the tests create.
+    monkeypatch.setenv("MOTO_EC2_LOAD_DEFAULT_AMIS", "false")
     monkeypatch.setenv("AWS_DEFAULT_REGION", REGION)
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")

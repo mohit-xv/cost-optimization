@@ -12,8 +12,8 @@ Two-phase, safety-first model:
    tag/ASG guardrails.
 
 > **Implemented:** full architecture, with detection + execution for **unattached EBS
-> volumes**, **unassociated Elastic IPs**, and **idle NAT Gateways**. Remaining resource
-> types (orphaned snapshots, ELB, EC2, RDS, ENI, AMI) are scaffolded for expansion.
+> volumes**, **unassociated Elastic IPs**, **idle NAT Gateways**, and **orphaned EBS
+> snapshots**. Remaining resource types (ELB, EC2, RDS, ENI, AMI) are scaffolded for expansion.
 
 ## Repository layout
 
@@ -82,8 +82,8 @@ volume tagged `CostKiller:Protect=true` is **never** flagged or deleted.
 
 ## Roadmap
 
-- **Phase 2 (in progress):** ✅ unassociated Elastic IPs, ✅ idle NAT Gateways;
-  remaining — orphaned EBS snapshots + enable **FOCUS 1.2 Data Exports** (S3) as the
+- **Phase 2 (in progress):** ✅ unassociated Elastic IPs, ✅ idle NAT Gateways,
+  ✅ orphaned EBS snapshots; remaining — enable **FOCUS 1.2 Data Exports** (S3) as the
   cost-attribution backbone.
 - **Phase 3:** idle/unused load balancers, underutilized/stopped EC2 (rightsizing).
 - **Phase 4:** idle RDS, orphaned ENIs, old AMIs.

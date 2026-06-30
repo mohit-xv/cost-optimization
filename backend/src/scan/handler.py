@@ -179,6 +179,61 @@ def _scan_nat_gateways(account, region: str) -> list[dict]:
     return out
 
 
+def _scan_snapshots(account, region: str) -> list[dict]:
+    ec2 = sts_assume.scan_client("ec2", account, region)
+
+    # Existing volume ids (so we can tell which snapshots are orphaned).
+    existing_volumes: set[str] = set()
+    vol_paginator = ec2.get_paginator("describe_volumes")
+    for page in vol_paginator.paginate():
+        for vol in page.get("Volumes", []):
+            existing_volumes.add(vol["VolumeId"])
+
+    # Snapshot ids backing self-owned AMIs must never be deleted (would break the AMI).
+    ami_snapshot_ids: set[str] = set()
+    for img in ec2.describe_images(Owners=["self"]).get("Images", []):
+        for bdm in img.get("BlockDeviceMappings", []):
+            sid = bdm.get("Ebs", {}).get("SnapshotId")
+            if sid:
+                ami_snapshot_ids.add(sid)
+
+    retention = config.snapshot_retention_days()
+    out: list[dict] = []
+    snap_paginator = ec2.get_paginator("describe_snapshots")
+    for page in snap_paginator.paginate(OwnerIds=["self"]):
+        for snap in page.get("Snapshots", []):
+            snap_id = snap["SnapshotId"]
+            if snap_id in ami_snapshot_ids:
+                continue
+            protected, _ = is_protected(snap.get("Tags", []))
+            if protected:
+                continue
+            source_vol = snap.get("VolumeId")
+            orphaned = bool(source_vol) and source_vol not in existing_volumes
+            start = snap.get("StartTime")
+            age = 0
+            if start is not None:
+                if start.tzinfo is None:
+                    start = start.replace(tzinfo=timezone.utc)
+                age = max(0, (_now() - start).days)
+            # Flag if the source volume is gone, or the snapshot is older than retention.
+            if not orphaned and age <= retention:
+                continue
+            size = snap.get("VolumeSize", 0)
+            out.append(
+                _candidate(
+                    account,
+                    region,
+                    snap_id,
+                    ResourceType.EBS_SNAPSHOT.value,
+                    age,
+                    pricing.snapshot_monthly_burn(size, region),
+                    {"volumeSize": int(size), "sourceVolumeId": source_vol, "orphaned": orphaned},
+                )
+            )
+    return out
+
+
 def _candidate(account, region, resource_id, resource_type, days_idle, monthly_burn, metadata) -> dict:
     return {
         "accountId": account.account_id,
@@ -196,6 +251,7 @@ def _scan_account_region(account, region: str) -> list[dict]:
         _scan_ebs(account, region)
         + _scan_eips(account, region)
         + _scan_nat_gateways(account, region)
+        + _scan_snapshots(account, region)
     )
 
 

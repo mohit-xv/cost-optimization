@@ -30,6 +30,7 @@ _NATIVE_PROTECTION_CODES = {
     "TerminationProtection",
     "VolumeInUse",
     "InvalidVolume.ProtectedSnapshot",
+    "InvalidSnapshot.InUse",          # snapshot still backing an AMI
     "SnapshotLocked",                 # AWS Backup Vault Lock (WORM)
 }
 
@@ -228,11 +229,59 @@ def _delete_nat_gateway(account, finding, dry_run: bool, actor: str) -> dict:
     return _record_deletion(finding, nat_id, "delete_nat_gateway", actor)
 
 
+def _delete_ebs_snapshot(account, finding, dry_run: bool, actor: str) -> dict:
+    ec2 = sts_assume.exec_client("ec2", account, finding.region)
+    snap_id = finding.resource_id
+    try:
+        resp = ec2.describe_snapshots(SnapshotIds=[snap_id])
+    except ClientError as exc:
+        if "NotFound" in exc.response["Error"]["Code"]:
+            return _aborted(finding, "already_deleted")
+        raise
+    snaps = resp.get("Snapshots", [])
+    if not snaps:
+        return _aborted(finding, "already_deleted")
+    protected, preason = is_protected(snaps[0].get("Tags", []))
+    if protected:
+        return _aborted(finding, preason)
+
+    # TOCTOU: a snapshot may have become an AMI's backing store since the scan.
+    for img in ec2.describe_images(Owners=["self"]).get("Images", []):
+        for bdm in img.get("BlockDeviceMappings", []):
+            if bdm.get("Ebs", {}).get("SnapshotId") == snap_id:
+                return _aborted(finding, "in_use_by_ami")
+
+    try:
+        ec2.delete_snapshot(SnapshotId=snap_id, DryRun=True)
+        allowed, msg = True, "dry_run_no_exception"
+    except ClientError as exc:
+        code = exc.response["Error"]["Code"]
+        if code == "DryRunOperation":
+            allowed, msg = True, "dry_run_ok"
+        elif code == "UnauthorizedOperation":
+            allowed, msg = False, "unauthorized"
+        else:
+            allowed, msg = False, code
+    if not allowed:
+        return _aborted(finding, msg)
+    if dry_run:
+        return {"findingId": finding.finding_id, "status": "DRY_RUN_OK", "reason": msg}
+
+    try:
+        ec2.delete_snapshot(SnapshotId=snap_id)
+    except ClientError as exc:
+        code = exc.response["Error"]["Code"]
+        status = "IGNORED" if code in _NATIVE_PROTECTION_CODES else "FAILED"
+        return {"findingId": finding.finding_id, "status": status, "reason": code}
+    return _record_deletion(finding, snap_id, "delete_snapshot", actor)
+
+
 # resource type -> deletion function
 _DELETERS = {
     ResourceType.EBS_VOLUME.value: _delete_ebs_volume,
     ResourceType.ELASTIC_IP.value: _delete_elastic_ip,
     ResourceType.NAT_GATEWAY.value: _delete_nat_gateway,
+    ResourceType.EBS_SNAPSHOT.value: _delete_ebs_snapshot,
 }
 
 

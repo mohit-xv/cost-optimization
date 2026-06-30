@@ -40,6 +40,7 @@ function seed(): Finding[] {
     mk("eipalloc-0abc123def0003", "ELASTIC_IP", "us-east-1", 30, 3.6, { publicIp: "52.10.20.30" }),
     mk("nat-0aa11bb22cc330004", "NAT_GATEWAY", "eu-west-1", 14, 35.4, { bytesProcessed: 0 }),
     mk("vol-0123456789abc0005", "EBS_VOLUME", "eu-west-1", 63, 5.04, { sizeGb: 50, volumeType: "gp2" }),
+    mk("snap-0aa11bb22cc330006", "EBS_SNAPSHOT", "us-east-1", 142, 10.0, { volumeSize: 200, orphaned: true }),
   ];
 }
 

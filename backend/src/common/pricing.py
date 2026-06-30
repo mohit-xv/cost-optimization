@@ -80,6 +80,15 @@ def eip_monthly_burn() -> float:
     return round(_EIP_HOURLY * HOURS_PER_MONTH, 4)
 
 
+_SNAPSHOT_GB_MONTH = 0.05  # roughly uniform across regions
+
+
+def snapshot_monthly_burn(size_gb: float, region: str | None = None) -> float:
+    """Upper-bound monthly cost of an EBS snapshot (billed on actual stored, incremental
+    bytes; we estimate from the source VolumeSize as a conservative ceiling)."""
+    return round(float(size_gb) * _SNAPSHOT_GB_MONTH, 4)
+
+
 def nat_gateway_monthly_burn(region: str) -> float:
     """Monthly uptime cost of a NAT Gateway (data-processing excluded for an idle one)."""
     hourly = _NAT_HOURLY.get(region, 0.045)
